@@ -6,7 +6,7 @@ import seaborn as sns
 import joblib
 from xgboost import XGBClassifier
 
-# A assinatura genômica validada pela seleção de características do Random Forest
+# Genomic signature validated by Random Forest feature selection
 top_50_genes = [
     'SFMBT2', 'AC008088.1', 'IGFN1', 'LINC01351', 'MID2', 'AL672043.1', 
     'AL138689.1', 'AC011507.1', 'G038121', 'G032393', 'G058127', 'G026426', 
@@ -18,96 +18,89 @@ top_50_genes = [
     'CATG00000057932.1', 'TBC1D26', 'ZNF681', 'G025598', 'AK303572', 'SPSB3', 'XLOC_013940'
 ]
 
-# --- PASSO 1: Finalizar o Pipeline de Machine Learning ---
-# Simulando a matriz após a transposição (Pacientes nas linhas, Genes nas colunas)
-# No seu código real, você utilizará o df_ml_ready e as labels (y) verdadeiras
+# --- STEP 1: Finalize the Machine Learning Pipeline ---
+# Simulating the matrix after transposition (Patients in rows, Genes in columns)
+# In your real code, you will use df_ml_ready and the true labels (y)
 X_train_mock = np.random.normal(8.0, 2.0, (20, 50)) 
-y_train_mock = np.array([0]*10 + [1]*10) # 10 Controles (0), 10 MDD (1)
+y_train_mock = np.array([0]*10 + [1]*10) # 10 Controls (0), 10 MDD (1)
 df_train = pd.DataFrame(X_train_mock, columns=top_50_genes)
 
-# Inicializa e treina o classificador
-modelo_xgb = XGBClassifier(random_state=42, eval_metric="logloss")
-modelo_xgb.fit(df_train, y_train_mock)
-print("Passo 1 concluído: XGBoost treinado com a assinatura de 50 biomarcadores.")
+# Initialize and train the classifier
+xgb_model = XGBClassifier(random_state=42, eval_metric="logloss")
+xgb_model.fit(df_train, y_train_mock)
+print("Step 1 complete: XGBoost trained with the 50 biomarker signature.")
 
-# --- PASSO 2: Exportar o Modelo ---
-joblib.dump(modelo_xgb, 'motor_diagnostico_mdd.joblib')
-print("Passo 2 concluído: Modelo exportado com sucesso como 'motor_diagnostico_mdd.joblib'.")
+# --- STEP 2: Export the Model ---
+joblib.dump(xgb_model, 'mdd_diagnostic_engine.joblib')
+print("Step 2 complete: Model successfully exported as 'mdd_diagnostic_engine.joblib'.")
 
-# Passo 5: Configuração do layout básico e contexto clínico
+# Step 5: Basic layout configuration and clinical context
 st.set_page_config(page_title="MDD-CDSS", page_icon="🧬", layout="wide")
 
 st.title("🔬 MDD-CDSS: Clinical Decision Support System")
-st.markdown("### Plataforma Translacional de Análise de Exossomos Plasmáticos para Transtorno Depressivo Maior (TDM)")
+st.markdown("### Translational Platform for Plasma Exosome Analysis in Major Depressive Disorder (MDD)")
 st.divider()
 
-# Passo 6: Implementar a entrada de dados (Upload do Exame)
-st.sidebar.header("Painel Clínico")
-st.sidebar.info("Faça o upload do exame transcriptômico do paciente para iniciar a triagem biomolecular.")
+# Step 6: Implement data input (Exam Upload)
+st.sidebar.header("Clinical Panel")
 
-# Instancia o componente de upload aceitando estritamente planilhas clínicas
-arquivo_exame = st.sidebar.file_uploader("Upload da Matriz de Expressão (.csv)", type=["csv"])
+# Instantiate the upload component, strictly accepting clinical spreadsheets
+exam_file = st.sidebar.file_uploader("Upload Expression Matrix (.csv)", type=["csv"])
 
-if arquivo_exame is not None:
-    # Lendo o exame carregado dinamicamente para um DataFrame do Pandas
-    # O index_col=0 garante que a primeira coluna (nome do paciente) seja o índice
-    df_paciente = pd.read_csv(arquivo_exame, index_col=0)
+if exam_file is not None:
+    # Reading the dynamically loaded exam into a Pandas DataFrame
+    # index_col=0 ensures the first column (patient name) is the index
+    df_patient = pd.read_csv(exam_file, index_col=0)
     
-    st.success("Sequenciamento recebido. Inspecionando a integridade dos dados...")
-    st.write("**Pré-visualização da Matriz de Expressão (Valores em Log2):**")
-    st.dataframe(df_paciente.head())
-    
-    # As Fases 3 e 4 (Carregamento do modelo e Predição) entrarão exatamente aqui!
-    
-else:
-    st.warning("Aguardando inserção de dados ômicos pelo corpo clínico...")
+    st.success("Sequencing received. Inspecting data integrity...")
+    st.write("**Expression Matrix Preview (Log2 Values):**")
+    st.dataframe(df_patient.head())
 
-# PASSO 7: Carregando o "cérebro" preditivo. 
-# Fazemos isso fora do loop de upload para que a memória não recarregue o modelo a cada clique.
 
+# STEP 7: Loading the predictive "brain". 
+# Done outside the upload loop so memory doesn't reload the model on every click.
 @st.cache_resource
-def carregar_modelo():
-    return joblib.load('motor_diagnostico_mdd.joblib')
+def load_model():
+    return joblib.load('mdd_diagnostic_engine.joblib')
 
-modelo_clinico = carregar_modelo()
+clinical_model = load_model()
 
-if arquivo_exame is not None:
-    arquivo_exame.seek(0)
+if exam_file is not None:
+    exam_file.seek(0)
     
-    if arquivo_exame.size > 0:
-        df_paciente = pd.read_csv(arquivo_exame, index_col=0)
+    if exam_file.size > 0:
+        df_patient = pd.read_csv(exam_file, index_col=0)
         
-        if df_paciente.shape[1] == 50:
-            st.success("Sequenciamento validado: Assinatura de 50 biomarcadores exossomais íntegra.")
+        if df_patient.shape[1] == 50:
+            st.success("Sequencing validated: 50 exosomal biomarker signature is intact.")
             
-            df_paciente = df_paciente.fillna(0.0)
+            df_patient = df_patient.fillna(0.0)
             
-            # --- TRAVA DE BLINAGEM DE COLUNAS ---
-            # Garante que as colunas sigam rigorosamente a mesma ordem do treinamento
-            colunas_oficiais = modelo_clinico.feature_names_in_
-            df_paciente = df_paciente[colunas_oficiais]
-            # ------------------------------------
+            # --- COLUMN SHIELDING LOCK ---
+            # Ensures columns strictly follow the same order as training
+            official_columns = clinical_model.feature_names_in_
+            df_patient = df_patient[official_columns]
             
-            probabilidades = modelo_clinico.predict_proba(df_paciente)
-            prob_tdm = probabilidades[0][1]
+            probabilities = clinical_model.predict_proba(df_patient)
+            prob_mdd = probabilities[0][1]
             
-            st.subheader("🚨 Resultado da Triagem Biomolecular")
-            if prob_tdm > 0.5:
-                st.error(f"Alto Risco Predito de TDM: {prob_tdm * 100:.1f}%")
-                st.markdown("*O padrão transcricional indica regulação sistêmica patológica compatível com depressão maior.*")
+            st.subheader("🚨 Biomolecular Screening Result")
+            if prob_mdd > 0.5:
+                st.error(f"High Predicted Risk for MDD: {prob_mdd * 100:.1f}%")
+                st.markdown("*The transcriptional pattern indicates pathological systemic regulation compatible with major depression.*")
             else:
-                st.success(f"Baixo Risco Predito de TDM: {prob_tdm * 100:.1f}%")
-                st.markdown("*O padrão transcricional encontra-se dentro dos limites da linha de base de coortes controle.*")
+                st.success(f"Low Predicted Risk for MDD: {prob_mdd * 100:.1f}%")
+                st.markdown("*The transcriptional pattern is within the baseline limits of control cohorts.*")
             
-            # --- FASE 4: EXPLICABILIDADE VISUAL (DATA VIZ) ---
+            # --- PHASE 4: VISUAL EXPLAINABILITY (DATA VIZ) ---
             st.markdown("---")
-            st.subheader("🧬 Assinatura Molecular do Paciente (Top 5 Biomarcadores)")
-            st.markdown("*Níveis de expressão em escala Log2 dos transcritos de maior peso sistêmico:*")
+            st.subheader("🧬 Patient's Molecular Signature (Top 5 Biomarkers)")
+            st.markdown("*Expression levels in Log2 scale of the transcripts with the highest systemic weight:*")
             
-            # Extrai os primeiros 5 genes da linha do paciente
-            top_5_genes = df_paciente.iloc[0, :5]
+            # Extract the first 5 genes of the patient's row
+            top_5_genes = df_patient.iloc[0, :5]
             
-            # Constrói o gráfico com Seaborn e Matplotlib
+            # Build the chart with Seaborn and Matplotlib
             fig, ax = plt.subplots(figsize=(10, 4))
             sns.barplot(
                 x=top_5_genes.values, 
@@ -115,16 +108,16 @@ if arquivo_exame is not None:
                 palette="viridis", 
                 ax=ax
             )
-            ax.set_xlabel("Nível de Expressão (Log2)")
-            ax.set_ylabel("Biomarcador Exossomal")
-            ax.set_title("Desvio Transcricional Individual")
+            ax.set_xlabel("Expression Level (Log2)")
+            ax.set_ylabel("Exosomal Biomarker")
+            ax.set_title("Individual Transcriptional Deviation")
             
-            # Renderiza no Streamlit
+            # Render in Streamlit
             st.pyplot(fig)
             
         else:
-            st.error(f"Erro Crítico: Assinatura biomolecular inválida. O exame contém {df_paciente.shape[1]} genes, mas o motor preditivo exige exatos 50 biomarcadores.")
+            st.error(f"Critical Error: Invalid biomolecular signature. The exam contains {df_patient.shape[1]} genes, but the predictive engine requires exactly 50 biomarkers.")
     else:
-        st.error("Erro Crítico: O arquivo enviado está vazio (0 bytes). Por favor, selecione um exame válido.")
+        st.error("Critical Error: The uploaded file is empty (0 bytes). Please select a valid exam.")
 else:
-    st.warning("Aguardando inserção de dados ômicos pelo corpo clínico...")
+    st.warning("Waiting for omics data insertion by the clinical staff...")
