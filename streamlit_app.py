@@ -696,17 +696,6 @@ with tab_history:
             st.session_state["last_run_key"] = None
             st.rerun()
 
-# --- FOOTER & CREDITS ---
-st.sidebar.markdown(
-    """
-    <div class='sidebar-footer'>
-        <b>MDD-CDSS</b><br>
-        Translational Multi-Omic Pipeline<br>
-        Author: Gabriel Antunes
-    </div>
-    """,
-    unsafe_allow_html=True,
-)
 
 # --- FOOTER & CREDITS ---
 st.sidebar.markdown(
