@@ -707,3 +707,18 @@ st.sidebar.markdown(
     """,
     unsafe_allow_html=True,
 )
+
+# --- FOOTER & CREDITS ---
+st.sidebar.markdown(
+    """
+    <div class='sidebar-footer'>
+        <b>MDD-CDSS</b><br>
+        Translational Multi-Omic Pipeline<br>
+        Author: Gabriel Antunes<br><br>
+        <a href="https://philomathlearning.com/studio?utm_source=member_project&utm_medium=badge&utm_campaign=vcs_gallery" target="_blank" rel="noopener">
+          <img src="https://philomathlearning.com/badges/vcs-dark.svg" alt="Built with love in the Philomath Vibe Coding Studio" height="38">
+        </a>
+    </div>
+    """,
+    unsafe_allow_html=True,
+)
