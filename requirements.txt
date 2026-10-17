@@ -6,3 +6,5 @@ seaborn
 matplotlib.pyplot
 matplotlib.colors
 scipy.stats
+LinearSegmentedColormap
+ttest_ind
