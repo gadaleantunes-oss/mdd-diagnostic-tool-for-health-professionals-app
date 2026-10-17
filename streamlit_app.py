@@ -463,7 +463,7 @@ if uploaded_file:
     # TAB 3: EXPRESSION HEATMAP
     # ---------------------------------------------------------------------
     with tab3:
-        st.subheader("🧬 Expression Heatmap (Top Genes + Signature)")
+        st.subheader("Expression Heatmap (Top Genes + Signature)")
         st.markdown("Global view of expression patterns across Control and MDD samples.")
 
         if df_exp.empty:
