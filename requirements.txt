@@ -1,7 +1,10 @@
+io
+warnings
 streamlit
 pandas
-xgboost
-scikit-learn
-matplotlib
+numpy
+plotly.express
 seaborn
-shap
+matplotlib.pyplot
+matplotlib.colors
+scipy.stats
