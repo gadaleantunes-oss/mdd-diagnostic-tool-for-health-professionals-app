@@ -1,713 +1,526 @@
 import io
-import hashlib
-from datetime import datetime
-
+import warnings
 import streamlit as st
 import pandas as pd
 import numpy as np
-import matplotlib.pyplot as plt
+import plotly.express as px
 import seaborn as sns
-import joblib
-import shap
-from xgboost import XGBClassifier
-from matplotlib.backends.backend_pdf import PdfPages
-from sklearn.model_selection import train_test_split
-from sklearn.metrics import roc_curve, auc, precision_recall_curve, average_precision_score
-from sklearn.calibration import calibration_curve
+import matplotlib.pyplot as plt
+from matplotlib.colors import LinearSegmentedColormap
+from scipy.stats import ttest_ind
 
-# Genomic signature validated by Random Forest feature selection
-top_50_genes = [
-    'SFMBT2', 'AC008088.1', 'IGFN1', 'LINC01351', 'MID2', 'AL672043.1', 
-    'AL138689.1', 'AC011507.1', 'G038121', 'G032393', 'G058127', 'G026426', 
-    'BIG-lncRNA-907', 'CORO1A', 'AC091073.1', 'G023309', 'TP53TG3B', 'LINC02234', 
-    'MTLN', 'G069257', 'AP001453.2', 'LHFPL3-AS2', 'AC016575.1', 'DNAJC8', 
-    'OR5C1', 'AC011897.1', 'CALB2', 'GAA', 'HPSE2', 'STMND1', 'AC018943.1', 
-    'PRB3', 'SLITRK1', 'G037800', 'G057120', 'OR10G2', 'G004021', 'AC119673.1', 
-    'AC010761.3', 'AC016559.1', 'G057055', 'LOC285000', 'AL122125.1', 
-    'CATG00000057932.1', 'TBC1D26', 'ZNF681', 'G025598', 'AK303572', 'SPSB3', 'XLOC_013940'
-]
+# =====================================================================
+# PALETTE (taken from the "Random Forest Observatory" visualizer)
+# =====================================================================
+BG = "#030305"
+PANEL = "#08080a"
+BORDER = "#2a1b3d"
+TEXT = "#e0aaff"
+TEXT_DIM = "#7b2cbf"
+NEON = "#c77dff"
+PINK = "#f72585"
+DEPTH = ["#3c096c", "#5a189a", "#7b2cbf", "#9d4edd", "#c77dff"]
+FONT = "Courier New, Courier, monospace"
 
-# --- STEP 1: Finalize the Machine Learning Pipeline ---
-# Simulating the matrix after transposition (Patients in rows, Genes in columns)
-# In your real code, you will use df_ml_ready and the true labels (y)
-# NOTE: seed added so the reference validation charts in the Overview tab (below)
-# don't reshuffle on every rerun — no change to the training/export logic itself.
-np.random.seed(42)
-X_train_mock = np.random.normal(8.0, 2.0, (20, 50)) 
-y_train_mock = np.array([0]*10 + [1]*10) # 10 Controls (0), 10 MDD (1)
-df_train = pd.DataFrame(X_train_mock, columns=top_50_genes)
+# Volcano plot colors: down (blue) / normal (gray) / up (red)
+COLOR_DOWN = "#2979FF"
+COLOR_NORMAL = "#8A8F98"
+COLOR_UP = "#FF1744"
 
-# Initialize and train the classifier
-xgb_model = XGBClassifier(random_state=42, eval_metric="logloss")
-xgb_model.fit(df_train, y_train_mock)
-print("Step 1 complete: XGBoost trained with the 50 biomarker signature.")
-
-# --- STEP 2: Export the Model ---
-joblib.dump(xgb_model, 'mdd_diagnostic_engine.joblib')
-print("Step 2 complete: Model successfully exported as 'mdd_diagnostic_engine.joblib'.")
-
-# --- STEP 2b (NEW, additive only): held-out validation split for the Overview
-# performance charts (ROC / PR / calibration). This trains a SEPARATE model
-# copy purely for reporting purposes — it never touches xgb_model, the export
-# above, or the clinical_model_exo/clinical_model_blood prediction path below.
-_X_tr, _X_te, _y_tr, _y_te = train_test_split(
-    df_train, y_train_mock, test_size=0.3, stratify=y_train_mock, random_state=42
+PURPLE_CMAP = LinearSegmentedColormap.from_list(
+    "purple_obs", ["#0f081c"] + DEPTH + ["#f3d9ff"]
 )
-_val_model = XGBClassifier(random_state=42, eval_metric="logloss")
-_val_model.fit(_X_tr, _y_tr)
-_val_scores = _val_model.predict_proba(_X_te)[:, 1]
 
-_fpr, _tpr, _ = roc_curve(_y_te, _val_scores)
-_roc_auc = auc(_fpr, _tpr)
-_precision, _recall, _ = precision_recall_curve(_y_te, _val_scores)
-_avg_precision = average_precision_score(_y_te, _val_scores)
-_cal_frac_pos, _cal_mean_pred = calibration_curve(_y_te, _val_scores, n_bins=3, strategy="uniform")
-
-# Step 5: Basic layout configuration and clinical context
-st.set_page_config(page_title="MDD-CDSS", page_icon="🧬", layout="wide")
-
-# ============================================================
-# GENOMICS CONSOLE THEME — CSS
-# ============================================================
-BG_COLOR = "#0B0D11"
-PANEL_COLOR = "#12151B"
-BORDER_COLOR = "#242832"
-TEXT_COLOR = "#E8E6DE"
-ACCENT_TEAL = "#00C2A8"
-ACCENT_GREEN = "#7CFC98"
-ACCENT_WARN = "#FF6B4A"
+# =====================================================================
+# PAGE CONFIGURATION AND THEME
+# =====================================================================
+st.set_page_config(page_title="MDD BioMarker Tracker", page_icon="🧬", layout="wide")
 
 st.markdown(f"""
-<style>
-    html, body, [class*="css"] {{
-        font-family: 'JetBrains Mono', 'Fira Code', ui-monospace, 'Courier New', monospace;
+    <style>
+    html, body, [class*="css"], .stApp, .stMarkdown, button, input, label {{
+        font-family: {FONT} !important;
     }}
-
     .stApp {{
-        background-color: {BG_COLOR};
-        color: {TEXT_COLOR};
+        background: radial-gradient(circle at 50% 0%, #0f081c 0%, {BG} 60%);
+        color: {TEXT};
+    }}
+    header[data-testid="stHeader"] {{ background: transparent; }}
+
+    h1 {{
+        color: #ffffff !important;
+        font-weight: normal !important;
+        letter-spacing: 2px;
+        text-shadow: 0 0 10px {NEON};
+        border-bottom: 1px solid {BORDER};
+        padding-bottom: 12px;
+    }}
+    h2, h3, h4 {{ color: {NEON} !important; letter-spacing: 1px; }}
+    p, li, span {{ color: {TEXT}; }}
+    hr {{ border-color: {BORDER} !important; }}
+
+    /* Tabs */
+    .stTabs [data-baseweb="tab-list"] {{ gap: 8px; background-color: transparent; border-bottom: 1px solid {BORDER}; }}
+    .stTabs [data-baseweb="tab"] {{
+        background-color: {PANEL}; border-radius: 6px 6px 0 0; color: {TEXT_DIM};
+        padding: 10px 20px; border: 1px solid {BORDER}; border-bottom: none;
+    }}
+    .stTabs [aria-selected="true"] {{
+        background-color: #3c096c; color: #ffffff !important;
+        border-color: #9d4edd; text-shadow: 0 0 8px {NEON};
+    }}
+    .stTabs [data-baseweb="tab-highlight"] {{ background-color: {NEON}; }}
+
+    /* Sidebar */
+    [data-testid="stSidebar"] {{ background-color: {PANEL}; border-right: 1px solid {BORDER}; }}
+    [data-testid="stSidebar"] h2 {{ font-size: 1.05rem; text-transform: uppercase; letter-spacing: 2px; }}
+    [data-testid="stFileUploaderDropzone"] {{ background-color: #0f081c; border: 1px dashed #5a189a; }}
+
+    /* Buttons */
+    .stButton>button, [data-testid="stFileUploaderDropzone"] button {{
+        background-color: #5a189a; color: white; border: 1px solid #9d4edd; border-radius: 6px;
+    }}
+    .stButton>button:hover, [data-testid="stFileUploaderDropzone"] button:hover {{
+        background-color: #9d4edd; color: white; border-color: {NEON}; box-shadow: 0 0 10px {NEON}55;
     }}
 
-    /* ---- Header ---- */
-    .console-header-icon {{
-        font-size: 3.2rem;
-        text-align: center;
-        line-height: 1;
-        padding-top: 0.2rem;
-    }}
-    .console-header-title {{
-        font-size: 2.0rem;
-        font-weight: 700;
-        letter-spacing: 0.03em;
-        color: {TEXT_COLOR};
-        margin-bottom: 0.15rem;
-    }}
-    .console-header-subtitle {{
-        font-size: 0.95rem;
-        color: {ACCENT_TEAL};
-        opacity: 0.9;
-        letter-spacing: 0.02em;
+    /* Sliders / inputs */
+    [data-testid="stSlider"] [role="slider"] {{ background-color: {NEON}; box-shadow: 0 0 8px {NEON}; }}
+    [data-testid="stSlider"] [data-testid="stThumbValue"] {{ color: {NEON}; }}
+    [data-baseweb="input"], [data-baseweb="select"] > div, [data-testid="stNumberInput"] input {{
+        background-color: #0f081c !important; border-color: {BORDER} !important; color: {TEXT} !important;
     }}
 
-    /* ---- Step tags ---- */
-    .step-tag {{
-        display: inline-block;
-        font-family: ui-monospace, 'Fira Code', 'Courier New', monospace;
-        font-size: 0.72rem;
-        font-weight: 600;
-        letter-spacing: 0.08em;
-        color: {ACCENT_TEAL};
-        background-color: rgba(0, 194, 168, 0.08);
-        border: 1px solid rgba(0, 194, 168, 0.35);
-        border-radius: 4px;
-        padding: 2px 10px;
-        margin-bottom: 0.5rem;
-        text-transform: uppercase;
+    /* Metrics and expanders as "panels" */
+    [data-testid="stMetric"] {{
+        background-color: {PANEL}; border: 1px solid {BORDER}; border-radius: 6px; padding: 14px 16px;
     }}
+    [data-testid="stMetricLabel"] {{ color: {TEXT_DIM}; text-transform: uppercase; letter-spacing: 1px; }}
+    [data-testid="stMetricValue"] {{ color: #ffffff; text-shadow: 0 0 10px {NEON}; }}
+    [data-testid="stExpander"] {{ background-color: {PANEL}; border: 1px solid {BORDER}; border-radius: 6px; }}
 
-    /* ---- Sidebar ---- */
-    section[data-testid="stSidebar"] {{
-        background-color: {PANEL_COLOR};
-        border-right: 1px solid {BORDER_COLOR};
-    }}
-    .sidebar-section-title {{
-        font-size: 0.72rem;
-        font-weight: 700;
-        letter-spacing: 0.08em;
-        color: {ACCENT_TEAL};
-        text-transform: uppercase;
-        margin-top: 0.4rem;
-        margin-bottom: 0.4rem;
-    }}
-    .sidebar-footer {{
-        text-align: center;
-        color: {TEXT_COLOR};
-        opacity: 0.6;
-        font-size: 0.72rem;
-        line-height: 1.5;
-        padding-top: 0.5rem;
-        border-top: 1px solid {BORDER_COLOR};
-    }}
+    /* Progress bar */
+    .stProgress > div > div > div > div {{ background-image: linear-gradient(90deg, #3c096c, {NEON}); }}
 
-    /* ---- Risk interpretation banners ---- */
-    .risk-banner {{
-        border-radius: 6px;
-        padding: 0.9rem 1.1rem;
-        font-size: 0.92rem;
-        margin-top: 0.6rem;
-        border: 1px solid;
-    }}
-    .risk-banner-high {{
-        background-color: rgba(255, 107, 74, 0.08);
-        border-color: rgba(255, 107, 74, 0.4);
-        color: {ACCENT_WARN};
-    }}
-    .risk-banner-low {{
-        background-color: rgba(124, 252, 152, 0.08);
-        border-color: rgba(124, 252, 152, 0.4);
-        color: {ACCENT_GREEN};
-    }}
-
-    /* ---- Metric cards ---- */
-    div[data-testid="stMetric"] {{
-        background-color: {PANEL_COLOR};
-        border: 1px solid {BORDER_COLOR};
-        border-radius: 8px;
-        padding: 0.9rem 0.9rem 0.6rem 0.9rem;
-    }}
-    div[data-testid="stMetricLabel"] {{
-        font-size: 0.72rem;
-        letter-spacing: 0.05em;
-        text-transform: uppercase;
-        opacity: 0.8;
-    }}
-    div[data-testid="stMetricValue"] {{
-        font-family: ui-monospace, 'Fira Code', 'Courier New', monospace;
-        color: {ACCENT_TEAL};
-    }}
-
-    /* ---- Tabs ---- */
-    button[data-baseweb="tab"] {{
-        font-family: ui-monospace, 'Fira Code', 'Courier New', monospace;
-        font-size: 0.85rem;
-    }}
-</style>
+    /* Alerts */
+    [data-testid="stAlert"] {{ background-color: {PANEL}; border: 1px solid {BORDER}; border-radius: 6px; }}
+    </style>
 """, unsafe_allow_html=True)
 
-
-def step_tag(label: str):
-    """Render a small monospace STEP tag above a section."""
-    st.markdown(f"<div class='step-tag'>{label}</div>", unsafe_allow_html=True)
+st.title("🧬 MDD BioMarker Tracker")
+st.markdown("Interactive platform for screening biological markers of **Major Depressive Disorder (MDD)**.")
 
 
-# ------------------------------------------------------------
-# SHAP: biomarker ranking + waterfall chart
-# ------------------------------------------------------------
-def build_shap_waterfall_data(model, df_row: pd.DataFrame, top_n: int = 5):
-    """
-    Rank this patient's genes by |SHAP value| for the given model and return
-    everything needed to draw a base-rate -> final-score waterfall:
-    (base_value, [top gene labels], [top gene SHAP values], final_margin_value).
-    df_row must already be reduced/ordered to the model's expected feature columns.
-    """
-    explainer = shap.TreeExplainer(model)
-    shap_values = explainer(df_row)
-    contributions = pd.Series(shap_values.values[0], index=df_row.columns)
-    base_value = float(np.ravel(shap_values.base_values)[0])
-
-    ordered = contributions.reindex(contributions.abs().sort_values(ascending=False).index)
-    top = ordered.iloc[:top_n]
-    rest = ordered.iloc[top_n:]
-
-    labels = list(top.index)
-    values = [float(v) for v in top.values]
-    if len(rest) > 0:
-        labels.append(f"Other {len(rest)} genes")
-        values.append(float(rest.sum()))
-
-    final_value = base_value + float(contributions.sum())
-    return base_value, labels, values, final_value
-
-
-def style_shap_waterfall(base_value, labels, values, final_value, actual_prob: float):
-    """Base-rate -> final-score waterfall. Bars: orange = pushes risk up, green = pushes risk down."""
-    steps = ["Base Rate"] + labels + ["Predicted Risk"]
-    n = len(steps)
-    y_pos = np.arange(n)
-
-    fig, ax = plt.subplots(figsize=(5.4, 0.45 * n + 1.1), dpi=150)
-    fig.patch.set_facecolor(BG_COLOR)
-    ax.set_facecolor(BG_COLOR)
-
-    lefts = [0.0]
-    widths = [base_value]
-    colors = [BORDER_COLOR]
-
-    running = base_value
-    for v in values:
-        start = running
-        end = running + v
-        lefts.append(min(start, end))
-        widths.append(abs(end - start))
-        colors.append(ACCENT_WARN if v > 0 else ACCENT_GREEN)
-        running = end
-
-    lefts.append(0.0)
-    widths.append(final_value)
-    colors.append(ACCENT_TEAL)
-
-    ax.barh(y_pos, widths, left=lefts, color=colors, height=0.6)
-    ax.set_yticks(y_pos)
-    ax.set_yticklabels(steps, fontfamily="monospace", fontsize=8, color=TEXT_COLOR)
-    ax.invert_yaxis()
-
-    ax.axvline(0, color=BORDER_COLOR, linewidth=1)
-    ax.text(final_value, n - 1, f"  {actual_prob * 100:.1f}%", va="center",
-            ha="left" if final_value >= 0 else "right",
-            color=ACCENT_TEAL, fontsize=8, family="monospace", fontweight="bold")
-
-    ax.set_xlabel("Relative Contribution to Risk", fontsize=9, color=TEXT_COLOR, family="monospace")
-    ax.tick_params(axis="x", colors=TEXT_COLOR, labelsize=8)
-    ax.grid(axis="x", color=BORDER_COLOR, linewidth=0.7, alpha=0.8)
-    ax.set_axisbelow(True)
-    for spine in ax.spines.values():
-        spine.set_color(BORDER_COLOR)
-
-    fig.tight_layout()
-    return fig
-
-
-# ------------------------------------------------------------
-# Reference-cohort model performance (Overview tab)
-# ------------------------------------------------------------
-def style_roc_chart(fpr, tpr, roc_auc_value):
-    fig, ax = plt.subplots(figsize=(4.6, 3.4), dpi=150)
-    fig.patch.set_facecolor(BG_COLOR)
-    ax.set_facecolor(BG_COLOR)
-    ax.plot([0, 1], [0, 1], linestyle="--", color=BORDER_COLOR, linewidth=1)
-    ax.plot(fpr, tpr, color=ACCENT_TEAL, linewidth=2)
-    ax.set_xlim(0, 1)
-    ax.set_ylim(0, 1)
-    ax.set_xlabel("False Positive Rate", fontsize=9, color=TEXT_COLOR, family="monospace")
-    ax.set_ylabel("True Positive Rate", fontsize=9, color=TEXT_COLOR, family="monospace")
-    ax.set_title(f"ROC Curve · AUC = {roc_auc_value:.2f}", fontsize=10, color=TEXT_COLOR, family="monospace")
-    ax.tick_params(colors=TEXT_COLOR, labelsize=8)
-    ax.grid(color=BORDER_COLOR, linewidth=0.5, alpha=0.6)
-    ax.set_axisbelow(True)
-    for spine in ax.spines.values():
-        spine.set_color(BORDER_COLOR)
-    fig.tight_layout()
-    return fig
-
-
-def style_pr_chart(recall, precision, avg_precision):
-    fig, ax = plt.subplots(figsize=(4.6, 3.4), dpi=150)
-    fig.patch.set_facecolor(BG_COLOR)
-    ax.set_facecolor(BG_COLOR)
-    ax.plot(recall, precision, color=ACCENT_GREEN, linewidth=2)
-    ax.set_xlim(0, 1)
-    ax.set_ylim(0, 1)
-    ax.set_xlabel("Recall", fontsize=9, color=TEXT_COLOR, family="monospace")
-    ax.set_ylabel("Precision", fontsize=9, color=TEXT_COLOR, family="monospace")
-    ax.set_title(f"Precision-Recall · AP = {avg_precision:.2f}", fontsize=10, color=TEXT_COLOR, family="monospace")
-    ax.tick_params(colors=TEXT_COLOR, labelsize=8)
-    ax.grid(color=BORDER_COLOR, linewidth=0.5, alpha=0.6)
-    ax.set_axisbelow(True)
-    for spine in ax.spines.values():
-        spine.set_color(BORDER_COLOR)
-    fig.tight_layout()
-    return fig
-
-
-def style_calibration_chart(mean_pred, frac_pos, patient_prob=None):
-    fig, ax = plt.subplots(figsize=(5, 3.4), dpi=150)
-    fig.patch.set_facecolor(BG_COLOR)
-    ax.set_facecolor(BG_COLOR)
-
-    ax.plot([0, 1], [0, 1], linestyle="--", color=BORDER_COLOR, linewidth=1, label="Perfect calibration")
-    ax.plot(mean_pred, frac_pos, marker="o", color=ACCENT_TEAL, linewidth=2, label="Reference cohort")
-
-    if patient_prob is not None:
-        ax.axvline(patient_prob, color=ACCENT_WARN, linestyle=":", linewidth=1.5)
-        ax.plot(patient_prob, min(max(patient_prob, 0.0), 1.0), marker="*",
-                color=ACCENT_WARN, markersize=15, zorder=4, label="This patient")
-
-    ax.set_xlim(0, 1)
-    ax.set_ylim(0, 1)
-    ax.set_xlabel("Predicted Risk", fontsize=9, color=TEXT_COLOR, family="monospace")
-    ax.set_ylabel("Observed Rate", fontsize=9, color=TEXT_COLOR, family="monospace")
-    ax.tick_params(colors=TEXT_COLOR, labelsize=8)
-    ax.grid(color=BORDER_COLOR, linewidth=0.5, alpha=0.6)
-    ax.set_axisbelow(True)
-    for spine in ax.spines.values():
-        spine.set_color(BORDER_COLOR)
-    ax.legend(fontsize=7, facecolor=PANEL_COLOR, edgecolor=BORDER_COLOR, labelcolor=TEXT_COLOR, loc="upper left")
-    fig.tight_layout()
-    return fig
-
-
-# ------------------------------------------------------------
-# Bootstrap / Monte-Carlo stability band around prob_mdd
-# ------------------------------------------------------------
-def bootstrap_prediction_band(model_exo, model_blood, row_exo: pd.DataFrame, row_blood: pd.DataFrame,
-                               n_iter: int = 200, rel_noise: float = 0.05, ci: float = 0.90, seed: int = 7):
-    """
-    Monte Carlo sensitivity range for the fused risk score: perturbs each gene
-    value by a small relative amount (simulating typical sequencing/measurement
-    noise) and re-predicts, giving a plausible range around the reported score.
-    This is a stability/sensitivity range, not a formal statistical confidence interval.
-    """
-    rng = np.random.default_rng(seed)
-
-    def perturb(row: pd.DataFrame) -> pd.DataFrame:
-        base = row.values.astype(float)
-        noise = rng.normal(loc=0.0, scale=rel_noise, size=(n_iter, base.shape[1]))
-        return pd.DataFrame(base * (1 + noise), columns=row.columns)
-
-    probs_exo = model_exo.predict_proba(perturb(row_exo))[:, 1]
-    probs_blood = model_blood.predict_proba(perturb(row_blood))[:, 1]
-    fused = (probs_exo + probs_blood) / 2
-
-    lower = float(np.percentile(fused, (1 - ci) / 2 * 100))
-    upper = float(np.percentile(fused, (1 + ci) / 2 * 100))
-    return lower, upper
-
-
-def style_stability_band(point: float, lower: float, upper: float):
-    fig, ax = plt.subplots(figsize=(5.4, 1.1), dpi=150)
-    fig.patch.set_facecolor(BG_COLOR)
-    ax.set_facecolor(BG_COLOR)
-
-    ax.hlines(0, lower, upper, color=ACCENT_TEAL, linewidth=5)
-    ax.plot(point, 0, marker="o", color=TEXT_COLOR, markersize=8, zorder=3)
-
-    ax.set_xlim(0, 1)
-    ax.set_yticks([])
-    ax.set_xlabel("Fused Risk Score — Stability Range", fontsize=8, color=TEXT_COLOR, family="monospace")
-    ax.tick_params(axis="x", colors=TEXT_COLOR, labelsize=7)
-    ax.xaxis.set_major_formatter(plt.FuncFormatter(lambda x, _: f"{x * 100:.0f}%"))
-    for spine in ax.spines.values():
-        spine.set_visible(False)
-    ax.spines["bottom"].set_visible(True)
-    ax.spines["bottom"].set_color(BORDER_COLOR)
-    fig.tight_layout()
-    return fig
-
-
-# ------------------------------------------------------------
-# Clinical report export (CSV + PDF)
-# ------------------------------------------------------------
-def build_csv_report(timestamp, prob_exo, prob_blood, prob_mdd, agreement, top_exo_labels, top_exo_values,
-                      top_blood_labels, top_blood_values) -> bytes:
-    record = {
-        "timestamp": timestamp,
-        "fused_risk_pct": round(prob_mdd * 100, 1),
-        "exosome_risk_pct": round(prob_exo * 100, 1),
-        "blood_risk_pct": round(prob_blood * 100, 1),
-        "model_agreement_pct": round(agreement * 100, 1),
-    }
-    for i, (gene, val) in enumerate(zip(top_exo_labels, top_exo_values), start=1):
-        record[f"top_exosome_gene_{i}"] = gene
-        record[f"top_exosome_gene_{i}_shap"] = round(val, 4)
-    for i, (gene, val) in enumerate(zip(top_blood_labels, top_blood_values), start=1):
-        record[f"top_blood_gene_{i}"] = gene
-        record[f"top_blood_gene_{i}_shap"] = round(val, 4)
-    return pd.DataFrame([record]).to_csv(index=False).encode("utf-8")
-
-
-def build_pdf_report(timestamp, prob_exo, prob_blood, prob_mdd, agreement, fig_exo, fig_blood, fig_calibration) -> bytes:
-    risk_label = "HIGH RISK" if prob_mdd > 0.5 else "LOW RISK"
-    risk_color = ACCENT_WARN if prob_mdd > 0.5 else ACCENT_GREEN
-
-    summary_fig, ax = plt.subplots(figsize=(8.27, 5.0), dpi=150)
-    summary_fig.patch.set_facecolor(BG_COLOR)
-    ax.set_facecolor(BG_COLOR)
-    ax.axis("off")
-
-    lines = [
-        ("MDD-CDSS — Clinical Screening Report", 16, TEXT_COLOR, "bold"),
-        (f"Generated: {timestamp}", 9, TEXT_COLOR, "normal"),
-        ("", 6, TEXT_COLOR, "normal"),
-        (f"Fused Risk Score:      {prob_mdd * 100:.1f}%   ({risk_label})", 12, risk_color, "bold"),
-        (f"Exosome Model Score:   {prob_exo * 100:.1f}%", 11, TEXT_COLOR, "normal"),
-        (f"Blood Model Score:     {prob_blood * 100:.1f}%", 11, TEXT_COLOR, "normal"),
-        (f"Model Agreement:       {agreement * 100:.1f}% difference", 11, TEXT_COLOR, "normal"),
-        ("", 8, TEXT_COLOR, "normal"),
-        ("This report is a decision-support aid and does not by itself", 9, TEXT_COLOR, "normal"),
-        ("constitute a clinical diagnosis. Interpret alongside clinical judgment.", 9, TEXT_COLOR, "normal"),
-    ]
-
-    y = 0.92
-    for text, size, color, weight in lines:
-        ax.text(0.06, y, text, transform=ax.transAxes, fontsize=size, color=color,
-                family="monospace", fontweight=weight, va="top")
-        y -= 0.085
-
-    buf = io.BytesIO()
-    with PdfPages(buf) as pdf:
-        pdf.savefig(summary_fig, facecolor=BG_COLOR)
-        pdf.savefig(fig_exo, facecolor=BG_COLOR)
-        pdf.savefig(fig_blood, facecolor=BG_COLOR)
-        pdf.savefig(fig_calibration, facecolor=BG_COLOR)
-    plt.close(summary_fig)
-    buf.seek(0)
-    return buf.getvalue()
-
-
-# STEP 7: Loading both predictive "brains"
-@st.cache_resource
-def load_models():
-    # Substitua pelos nomes exatos dos seus arquivos locais
-    model_exosomes = joblib.load('xgboost_exosome.joblib')
-    model_blood = joblib.load('xgboost_blood.joblib')
-    return model_exosomes, model_blood
-
-clinical_model_exo, clinical_model_blood = load_models()
-
-# ------------------------------------------------------------
-# Session state (in-session patient history)
-# ------------------------------------------------------------
-if "history" not in st.session_state:
-    st.session_state["history"] = []
-if "last_run_key" not in st.session_state:
-    st.session_state["last_run_key"] = None
-
-# ============================================================
-# HEADER
-# ============================================================
-header_icon_col, header_text_col = st.columns([1, 8])
-with header_icon_col:
-    st.markdown("<div class='console-header-icon'>🔬</div>", unsafe_allow_html=True)
-with header_text_col:
-    st.markdown("<div class='console-header-title'>MDD-CDSS: Clinical Decision Support System</div>", unsafe_allow_html=True)
-    st.markdown(
-        "<div class='console-header-subtitle'>Translational Platform for Plasma Exosome Analysis in Major Depressive Disorder (MDD)</div>",
-        unsafe_allow_html=True,
+def style_plotly(fig, **kwargs):
+    """Applies the dark purple look to any Plotly figure."""
+    fig.update_layout(
+        template="plotly_dark",
+        plot_bgcolor="rgba(0,0,0,0)",
+        paper_bgcolor="rgba(0,0,0,0)",
+        font=dict(family=FONT, color=TEXT),
+        legend=dict(bgcolor="rgba(8,8,10,0.6)", bordercolor=BORDER, borderwidth=1),
+        **kwargs,
     )
+    if fig.layout.title.text:  # avoids a stray "undefined" title on untitled charts
+        fig.update_layout(title_font=dict(color=NEON))
+    fig.update_xaxes(gridcolor=BORDER, zerolinecolor=DEPTH[2], linecolor=BORDER)
+    fig.update_yaxes(gridcolor=BORDER, zerolinecolor=DEPTH[2], linecolor=BORDER)
+    return fig
 
-st.divider()
 
-# ============================================================
-# TABS
-# ============================================================
-tab_overview, tab_results, tab_history = st.tabs(["🧭 Overview", "📊 Results & Biomarkers", "🗂️ Session History"])
+# =====================================================================
+# LITERATURE SIGNATURE
+# =====================================================================
+LITERATURE_SIGNATURE = {
+    'KRT23': 'UP', 'PLSCR1': 'UP', 'CLEC4A': 'UP',
+    'CAPRIN1': 'UP', 'PROK2': 'UP', 'ZBTB16': 'DOWN', 'MLC1': 'DOWN'
+}
 
-# --- OVERVIEW TAB ---
-with tab_overview:
-    step_tag("STEP 01 · METHODOLOGY")
-    st.subheader("What This App Does")
-    st.markdown(
-        """
-        **MDD-CDSS** is a diagnostic support tool built for clinicians and researchers who need a
-        faster, simpler read on a patient's plasma exosome and blood biomarker data. Instead of
-        manually reviewing raw sequencing output gene-by-gene, the platform combines two trained
-        machine learning models — one for brain-derived plasma exosomes, one for peripheral blood
-        proteins — into a single fused risk score for Major Depressive Disorder (MDD).
+# =====================================================================
+# PROCESSING ENGINE
+# =====================================================================
+def process_data(file):
+    raw_text = file.getvalue().decode("utf-8", errors='ignore')
+    lines = raw_text.splitlines()
 
-        Upload a patient's two sequencing matrices in the sidebar, and the **Results & Biomarkers**
-        tab will surface the fused risk score, the specific genes that drove that patient's result,
-        and an exportable report you can attach to their chart. The goal is to make the underlying
-        multi-omic analysis easier to act on — not to replace clinical judgment.
-        """
-    )
+    rows_to_skip = 0
+    for i, line in enumerate(lines):
+        if line.startswith('FEATURES'):
+            rows_to_skip = i
+            break
+        elif '!series_matrix_table_begin' in line:
+            rows_to_skip = i + 1
+            break
 
-# ============================================================
-# SIDEBAR — CLINICAL PANEL
-# ============================================================
-st.sidebar.header("Clinical Panel")
-st.sidebar.markdown("<div class='sidebar-section-title'>STEP 02 · SEQUENCING INPUT</div>", unsafe_allow_html=True)
+    separator = '\t' if file.name.endswith('.txt') else ','
+    df = pd.read_csv(io.StringIO(raw_text), sep=separator, skiprows=rows_to_skip, low_memory=False)
 
-with st.sidebar.container(border=True):
-    file_exosomes = st.file_uploader("Upload EXOSOME Matrix (.csv)", type=["csv"], key="exosomes")
-    file_blood = st.file_uploader("Upload BLOOD Matrix (.csv)", type=["csv"], key="blood")
+    is_agilent = 'LogRatio' in df.columns and 'PValueLogRatio' in df.columns
 
-# ============================================================
-# RESULTS & BIOMARKERS TAB
-# ============================================================
-with tab_results:
-    step_tag("STEP 03 · MODEL VALIDATION")
-    st.subheader("Validation & Execution")
+    # 1. LOGIC FOR AGILENT FILES
+    if is_agilent:
+        if 'ControlType' in df.columns:
+            df = df[df['ControlType'] == 0].copy()
 
-    analysis_ready = False
+        df['LogRatio'] = pd.to_numeric(df['LogRatio'], errors='coerce')
+        df['PValueLogRatio'] = pd.to_numeric(df['PValueLogRatio'], errors='coerce')
+        df = df.replace([np.inf, -np.inf], np.nan).dropna(subset=['LogRatio', 'PValueLogRatio'])
 
-    if file_exosomes is not None and file_blood is not None:
-        # ... (leitura dos arquivos permanece igual) ...
-        df_exosomes = pd.read_csv(file_exosomes, index_col=0)
-        df_blood = pd.read_csv(file_blood, index_col=0)
+        p_vals = np.clip(df['PValueLogRatio'], 1e-300, 1.0)
+        df['Log10_P'] = -np.log10(p_vals)
 
-        # Extraindo as colunas oficiais de CADA modelo
-        features_exo = clinical_model_exo.feature_names_in_
-        features_blood = clinical_model_blood.feature_names_in_
+        df['GeneTemp'] = df.get('GeneName', np.nan)
+        for col in ['SystematicName', 'ProbeUID', 'ProbeName', 'ID_REF']:
+            if col in df.columns:
+                df['GeneTemp'] = df['GeneTemp'].fillna(df[col])
 
-        # Trava de segurança para garantir que cada arquivo tem as 50 colunas corretas
-        if df_exosomes.shape[1] == len(features_exo) and df_blood.shape[1] == len(features_blood):
-            st.success("Sequencing validated: Both Exosomal and Peripheral Blood signatures are intact.")
+        df['GeneTemp'] = df['GeneTemp'].astype(str).str.upper()
 
-            # Shielding and predicting for Exosomes
-            df_exosomes = df_exosomes.fillna(0.0)[features_exo]
-            prob_exo = clinical_model_exo.predict_proba(df_exosomes)[0][1]
+        df_exp = pd.DataFrame()
+        col_g = next((c for c in ['gProcessedSignal', 'gDyeNormSignal', 'gMeanSignal'] if c in df.columns), None)
+        col_r = next((c for c in ['rProcessedSignal', 'rDyeNormSignal', 'rMeanSignal'] if c in df.columns), None)
 
-            # Shielding and predicting for Blood
-            df_blood = df_blood.fillna(0.0)[features_blood]
-            prob_blood = clinical_model_blood.predict_proba(df_blood)[0][1]
+        if col_g and col_r:
+            g_signal = pd.to_numeric(df[col_g], errors='coerce')
+            r_signal = pd.to_numeric(df[col_r], errors='coerce')
 
-            # --- MULTI-OMIC LATE FUSION (ENSEMBLE) ---
-            prob_mdd = (prob_exo + prob_blood) / 2
-            agreement = abs(prob_exo - prob_blood)
-
-            analysis_ready = True
+            df_signal = pd.DataFrame({
+                'Gene': df['GeneTemp'],
+                'Control (Cy3)': np.log2(np.maximum(g_signal, 1)),
+                'MDD (Cy5)': np.log2(np.maximum(r_signal, 1))
+            }).dropna()
+            df_exp = df_signal.groupby('Gene').mean()
+            cols_control = ['Control (Cy3)']
+            cols_mdd = ['MDD (Cy5)']
         else:
-            st.error("Critical Error: Matrix dimensions do not match the required clinical models.")
+            cols_control = []
+            cols_mdd = []
+
+        df_stats = pd.DataFrame({
+            'Gene': df['GeneTemp'],
+            'Log2FC': df['LogRatio'],
+            'Log10_P': df['Log10_P'],
+            'P_Value': df['PValueLogRatio']
+        }).replace([np.inf, -np.inf], np.nan).dropna(subset=['Log2FC', 'Log10_P'])
+
+        return df_exp, df_stats, cols_control, cols_mdd, True
+
+    # 2. LOGIC FOR GEO MATRICES
     else:
-        st.info("Upload both the EXOSOME and BLOOD matrices in the sidebar to run the analysis.")
+        if 'GeneName' in df.columns: df = df.set_index('GeneName')
+        elif 'Symbol' in df.columns: df = df.set_index('Symbol')
+        elif 'ID_REF' in df.columns: df = df.set_index('ID_REF')
+        else: df = df.set_index(df.columns[0])
 
-    if analysis_ready:
-        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        df = df[df.index.notnull()]
+        df = df[~df.index.astype(str).str.contains('Unknown|Unidentified', case=False, na=False)]
+        df.index = df.index.astype(str).str.upper()
 
-        # Pre-compute SHAP waterfall data once, reused by the chart, the CSV/PDF export, and the history log
-        base_exo, labels_exo, values_exo, final_exo = build_shap_waterfall_data(clinical_model_exo, df_exosomes.iloc[[0]])
-        base_blood, labels_blood, values_blood, final_blood = build_shap_waterfall_data(clinical_model_blood, df_blood.iloc[[0]])
+        df_num = df.apply(pd.to_numeric, errors='coerce').dropna(axis=1, how='all')
+        df_num = df_num.groupby(level=0).mean(numeric_only=True)
+        if not df_num.empty and df_num.max().max() > 100:
+            df_num = np.log2(df_num + 1)
 
-        # ---- STEP 04: FUSED RISK ANALYSIS ----
-        step_tag("STEP 04 · FUSED RISK ANALYSIS")
-        st.subheader("🚨 Multi-Omic Biomolecular Screening Result")
+        cols = df_num.columns
+        half = len(cols) // 2
+        cols_control, cols_mdd = cols[:half], cols[half:]
 
-        kpi1, kpi2, kpi3, kpi4 = st.columns(4)
-        kpi1.metric("Fused Risk Score", f"{prob_mdd * 100:.1f}%")
-        kpi2.metric("Exosome Model Score", f"{prob_exo * 100:.1f}%")
-        kpi3.metric("Blood Model Score", f"{prob_blood * 100:.1f}%")
-        kpi4.metric("Model Agreement", f"{agreement * 100:.1f}%")
+        log2fc = df_num[cols_mdd].mean(axis=1) - df_num[cols_control].mean(axis=1)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            t_stat, p_val = ttest_ind(df_num[cols_mdd], df_num[cols_control], axis=1)
 
-        band_lower, band_upper = bootstrap_prediction_band(
-            clinical_model_exo, clinical_model_blood, df_exosomes.iloc[[0]], df_blood.iloc[[0]]
-        )
-        st.pyplot(style_stability_band(prob_mdd, band_lower, band_upper))
-        st.caption(
-            f"90% stability range: {band_lower * 100:.1f}%–{band_upper * 100:.1f}% "
-            "(accounts for typical measurement noise in the sequencing data — not a formal statistical confidence interval)."
-        )
+        p_val = np.nan_to_num(p_val, nan=1.0)
+        log10_p = -np.log10(np.clip(p_val, 1e-300, 1.0))
 
-        if prob_mdd > 0.5:
-            st.markdown(
-                f"<div class='risk-banner risk-banner-high'>"
-                f"<b>High Predicted Risk for MDD: {prob_mdd * 100:.1f}%</b><br>"
-                f"The combined transcriptomic and proteomic pattern indicates pathological systemic regulation."
-                f"</div>",
-                unsafe_allow_html=True,
-            )
-        else:
-            st.markdown(
-                f"<div class='risk-banner risk-banner-low'>"
-                f"<b>Low Predicted Risk for MDD: {prob_mdd * 100:.1f}%</b><br>"
-                f"The systemic profile is within the baseline limits of control cohorts."
-                f"</div>",
-                unsafe_allow_html=True,
-            )
+        df_stats = pd.DataFrame({
+            'Gene': df_num.index,
+            'Log2FC': log2fc,
+            'P_Value': p_val,
+            'Log10_P': log10_p
+        }, index=df_num.index).replace([np.inf, -np.inf], np.nan).dropna(subset=['Log2FC', 'Log10_P']).reset_index(drop=True)
 
-        # ---- STEP 05: RELIABILITY CHECK ----
-        st.markdown("---")
-        step_tag("STEP 05 · RELIABILITY CHECK")
-        st.subheader("Calibration & Reliability")
-        st.caption(
-            "The dashed diagonal is perfect calibration. Points near it mean predicted risk has "
-            "historically tracked observed outcomes in the reference cohort; the star marks where "
-            "this patient's score falls on that curve."
-        )
-        fig_calibration = style_calibration_chart(_cal_mean_pred, _cal_frac_pos, patient_prob=prob_mdd)
-        st.pyplot(fig_calibration)
+        return df_num, df_stats, cols_control, cols_mdd, False
 
-        # ---- STEP 06: BIOMARKER SIGNATURE ----
-        st.markdown("---")
-        step_tag("STEP 06 · BIOMARKER SIGNATURE")
-        st.subheader("🧬 Systemic Signature (Exosomes vs. Peripheral Blood)")
-        st.caption(
-            "Genes ranked by |SHAP value| — the biomarkers that most drove *this patient's* fused "
-            f"risk score. <span style='color:{ACCENT_WARN}'>■</span> pushes risk up · "
-            f"<span style='color:{ACCENT_GREEN}'>■</span> pushes risk down",
-            unsafe_allow_html=True,
-        )
+# =====================================================================
+# MAIN INTERFACE
+# =====================================================================
+st.sidebar.header("📥 Data Input")
+uploaded_file = st.sidebar.file_uploader("Upload Matrix", type=['csv', 'txt'])
 
-        col1, col2 = st.columns(2)
-        with col1:
-            st.markdown("**Exosome Model — Base Rate to Predicted Risk**")
-            fig_exo = style_shap_waterfall(base_exo, labels_exo, values_exo, final_exo, prob_exo)
-            st.pyplot(fig_exo)
-        with col2:
-            st.markdown("**Blood Model — Base Rate to Predicted Risk**")
-            fig_blood = style_shap_waterfall(base_blood, labels_blood, values_blood, final_blood, prob_blood)
-            st.pyplot(fig_blood)
+st.sidebar.markdown("---")
+st.sidebar.header("⚙️ Statistical Filters")
+p_val_thresh = st.sidebar.slider("P-value Cutoff (-Log10)", 1.0, 5.0, 1.3)
+fc_thresh = st.sidebar.slider("Log2 Fold Change Cutoff", 0.1, 3.0, 0.5)
 
-        # ---- STEP 07: CLINICAL REPORT EXPORT ----
-        st.markdown("---")
-        step_tag("STEP 07 · CLINICAL REPORT")
-        st.subheader("Export Clinical Report")
-
-        csv_bytes = build_csv_report(
-            timestamp, prob_exo, prob_blood, prob_mdd, agreement,
-            labels_exo, values_exo, labels_blood, values_blood,
-        )
-        pdf_bytes = build_pdf_report(
-            timestamp, prob_exo, prob_blood, prob_mdd, agreement, fig_exo, fig_blood, fig_calibration
-        )
-
-        export_col1, export_col2 = st.columns(2)
-        with export_col1:
-            st.download_button(
-                "📄 Download PDF Report", data=pdf_bytes,
-                file_name=f"mdd_cdss_report_{timestamp.replace(':', '-').replace(' ', '_')}.pdf",
-                mime="application/pdf",
-            )
-        with export_col2:
-            st.download_button(
-                "📑 Download CSV Summary", data=csv_bytes,
-                file_name=f"mdd_cdss_summary_{timestamp.replace(':', '-').replace(' ', '_')}.csv",
-                mime="text/csv",
-            )
-
-        # ---- Session history logging (de-duplicated per unique upload pair) ----
-        run_key = hashlib.md5(file_exosomes.getvalue() + file_blood.getvalue()).hexdigest()
-        if run_key != st.session_state["last_run_key"]:
-            st.session_state["history"].append({
-                "Timestamp": timestamp,
-                "Fused Risk %": round(prob_mdd * 100, 1),
-                "Exosome %": round(prob_exo * 100, 1),
-                "Blood %": round(prob_blood * 100, 1),
-                "Agreement %": round(agreement * 100, 1),
-                "Top Exosome Gene": labels_exo[0] if labels_exo else "",
-                "Top Blood Gene": labels_blood[0] if labels_blood else "",
-            })
-            st.session_state["last_run_key"] = run_key
-
-        plt.close(fig_exo)
-        plt.close(fig_blood)
-        plt.close(fig_calibration)
-
-# ============================================================
-# SESSION HISTORY TAB
-# ============================================================
-with tab_history:
-    st.subheader("Session History")
-    if len(st.session_state["history"]) == 0:
-        st.info("No patients analyzed yet this session. Results will appear here as you run them.")
-    else:
-        st.dataframe(pd.DataFrame(st.session_state["history"]), use_container_width=True, hide_index=True)
-        if st.button("Clear Session History"):
-            st.session_state["history"] = []
-            st.session_state["last_run_key"] = None
-            st.rerun()
-
-
-# --- FOOTER & CREDITS ---
-st.sidebar.markdown(
-    """
-    <div class='sidebar-footer'>
-        <b>MDD-CDSS</b><br>
-        Translational Multi-Omic Pipeline<br>
-        Author: Gabriel Antunes<br><br>
-        <a href="https://philomathlearning.com/studio?utm_source=member_project&utm_medium=badge&utm_campaign=vcs_gallery" target="_blank" rel="noopener">
-          <img src="https://philomathlearning.com/badges/vcs-dark.svg" alt="Built with love in the Philomath Vibe Coding Studio" height="38">
-        </a>
-    </div>
-    """,
-    unsafe_allow_html=True,
+st.sidebar.markdown("---")
+st.sidebar.header("🔬 Control / MDD Split")
+n_control_input = st.sidebar.number_input(
+    "Number of CONTROL columns (the first N columns)",
+    min_value=1, value=33, step=1,
+    help="Define how many of the first columns in the matrix are Control samples. The remaining columns will be MDD."
 )
+
+if uploaded_file:
+    with st.spinner('Processing genomic matrix...'):
+        df_exp, df_stats, cols_control, cols_mdd, is_agilent = process_data(uploaded_file)
+
+    if not is_agilent:
+        n_total = len(df_exp.columns)
+        n_ctrl = min(int(n_control_input), n_total - 1)
+        cols_control = df_exp.columns[:n_ctrl]
+        cols_mdd = df_exp.columns[n_ctrl:]
+
+        log2fc = df_exp[cols_mdd].mean(axis=1) - df_exp[cols_control].mean(axis=1)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            t_stat, p_val = ttest_ind(df_exp[cols_mdd], df_exp[cols_control], axis=1)
+        p_val = np.nan_to_num(p_val, nan=1.0)
+        log10_p = -np.log10(np.clip(p_val, 1e-300, 1.0))
+        df_stats = pd.DataFrame({
+            'Gene': df_exp.index,
+            'Log2FC': log2fc,
+            'P_Value': p_val,
+            'Log10_P': log10_p
+        }, index=df_exp.index).replace([np.inf, -np.inf], np.nan).dropna(subset=['Log2FC', 'Log10_P']).reset_index(drop=True)
+
+    st.success(f"File processed! Probes: {len(df_stats)} | Control: {len(cols_control)} samples | MDD: {len(cols_mdd)} samples")
+
+    tab1, tab2, tab3 = st.tabs(["🌋 Volcano Plot", "🎯 Clinical Diagnosis", "🧬 Expression Heatmap"])
+
+    # ---------------------------------------------------------------------
+    # TAB 1: VOLCANO PLOT
+    # ---------------------------------------------------------------------
+    with tab1:
+        st.subheader("🌋 Interactive Volcano Plot")
+
+        df_clean = df_stats.replace([np.inf, -np.inf], np.nan).dropna(subset=['Log2FC', 'Log10_P']).copy()
+
+        def categorize(row):
+            if row['Gene'] in LITERATURE_SIGNATURE.keys():
+                return 'MDD Signature'
+            elif row['Log10_P'] > p_val_thresh:
+                if row['Log2FC'] > fc_thresh:
+                    return 'Upregulated'
+                elif row['Log2FC'] < -fc_thresh:
+                    return 'Downregulated'
+            return 'Not Significant'
+
+        df_clean['Status'] = df_clean.apply(categorize, axis=1)
+
+        fig_volcano = px.scatter(
+            df_clean, x='Log2FC', y='Log10_P', color='Status', hover_name='Gene',
+            hover_data={'Log2FC': ':.3f', 'Log10_P': ':.2f', 'P_Value': ':.2e', 'Status': True},
+            color_discrete_map={
+                'Downregulated': COLOR_DOWN,
+                'Not Significant': COLOR_NORMAL,
+                'Upregulated': COLOR_UP,
+                'MDD Signature': '#FFFFFF',
+            },
+            category_orders={'Status': ['Downregulated', 'Not Significant', 'Upregulated', 'MDD Signature']},
+            opacity=1, render_mode='webgl'
+        )
+        # Flat, solid markers: no transparency or outlines, so no shading where points overlap
+        fig_volcano.update_traces(marker=dict(size=5, line=dict(width=0)))
+
+        df_sig = df_clean[df_clean['Status'] == 'MDD Signature']
+        if not df_sig.empty:
+            fig_volcano.add_scatter(
+                x=df_sig['Log2FC'], y=df_sig['Log10_P'], text=df_sig['Gene'], mode='markers+text',
+                marker=dict(color='#FFFFFF', size=12, line=dict(color=NEON, width=2)),
+                textposition='top center', textfont=dict(color='#FFFFFF', size=13), showlegend=False
+            )
+
+        fig_volcano.add_hline(y=p_val_thresh, line_dash="dash", line_color=COLOR_NORMAL)
+        fig_volcano.add_vline(x=fc_thresh, line_dash="dash", line_color=COLOR_UP)
+        fig_volcano.add_vline(x=-fc_thresh, line_dash="dash", line_color=COLOR_DOWN)
+
+        style_plotly(fig_volcano)
+        st.plotly_chart(fig_volcano, use_container_width=True)
+
+    # ---------------------------------------------------------------------
+    # TAB 2: CLINICAL DIAGNOSIS
+    # ---------------------------------------------------------------------
+    with tab2:
+        st.subheader("🎯 Molecular Diagnosis Center")
+
+        st.markdown("### 1. Overview: MDD Cohort vs Control")
+        genes_found = df_stats[df_stats['Gene'].isin(LITERATURE_SIGNATURE.keys())]
+
+        if not genes_found.empty:
+            genes_found = genes_found.groupby('Gene').mean(numeric_only=True)
+
+        points = 0
+        details = []
+        for gene, expected_dir in LITERATURE_SIGNATURE.items():
+            if gene in genes_found.index:
+                actual_fc = genes_found.loc[gene, 'Log2FC']
+                actual_dir = 'UP' if actual_fc > 0 else 'DOWN'
+                if actual_dir == expected_dir:
+                    points += 1
+                    status = "✅ Confirms"
+                else:
+                    status = "❌ Reversed"
+                details.append(f"**{gene}**: Expected {expected_dir} | Observed {actual_dir} (Log2FC: {actual_fc:.2f}) -> {status}")
+            else:
+                details.append(f"**{gene}**: Not found in matrix")
+
+        prob = (points / len(LITERATURE_SIGNATURE)) * 100
+
+        col_grp1, col_grp2 = st.columns([1, 2])
+        with col_grp1:
+            st.metric("Average MDD Cohort Alignment", f"{prob:.1f}%")
+            st.progress(int(prob))
+        with col_grp2:
+            with st.expander("View gene breakdown for the experimental group"):
+                for d in details: st.markdown(f"- {d}")
+
+        st.divider()
+
+        st.markdown("### 👤 2. Individual Screening (Precision Medicine)")
+        st.markdown("Assess the expression deviation of **a single patient** relative to the healthy control group mean to confirm the clinical signature.")
+
+        if df_exp.empty:
+            st.warning("⚠️ Intensity/sample data not found in the matrix, so an individual profile cannot be generated.")
+        else:
+            if is_agilent:
+                st.info("Agilent Dual-Color matrix detected. Analyzing the Cy5 sample (MDD) against the Cy3 reference (Control).")
+                selected_sample = "Patient Cy5"
+
+                df_ind = df_stats[df_stats['Gene'].isin(LITERATURE_SIGNATURE.keys())].copy()
+                df_ind['Log2FC_Individual'] = df_ind['Log2FC']
+            else:
+                col_sel1, col_sel2 = st.columns([1, 2])
+                with col_sel1:
+                    selected_sample = st.selectbox("Select the Patient (MDD Sample):", cols_mdd)
+
+                control_mean = df_exp[cols_control].mean(axis=1)
+                patient_exp = df_exp[selected_sample]
+                log2fc_ind = patient_exp - control_mean
+
+                df_ind = pd.DataFrame({
+                    'Gene': df_exp.index,
+                    'Log2FC_Individual': log2fc_ind
+                })
+                df_ind = df_ind[df_ind['Gene'].isin(LITERATURE_SIGNATURE.keys())].copy()
+
+            if df_ind.empty:
+                st.warning("No MDD signature genes found in this sample.")
+            else:
+                COLOR_MATCH, COLOR_REVERSED = NEON, PINK
+
+                df_ind['Expected'] = df_ind['Gene'].map(LITERATURE_SIGNATURE)
+                df_ind['Color'] = df_ind.apply(
+                    lambda x: COLOR_MATCH if (x['Log2FC_Individual'] > 0 and x['Expected'] == 'UP') or
+                                             (x['Log2FC_Individual'] < 0 and x['Expected'] == 'DOWN') else COLOR_REVERSED,
+                    axis=1
+                )
+                df_ind['Match'] = df_ind.apply(
+                    lambda x: '✅ Match' if x['Color'] == COLOR_MATCH else '❌ Reversed', axis=1
+                )
+
+                col_chart, col_metrics = st.columns([2, 1])
+
+                with col_chart:
+                    fig_ind = px.bar(
+                        df_ind, x='Log2FC_Individual', y='Gene', orientation='h',
+                        color='Color', color_discrete_map="identity",
+                        title=f"Signature Expression Deviation: {selected_sample}",
+                        text='Log2FC_Individual', hover_data={'Expected': True, 'Match': True, 'Color': False}
+                    )
+
+                    fig_ind.update_traces(texttemplate='%{text:.2f}', textposition='outside',
+                                          marker_line_color='#ffffff', marker_line_width=0.5)
+                    style_plotly(
+                        fig_ind,
+                        xaxis_title="Patient Deviation (Log2 Fold Change vs Controls)",
+                        yaxis_title="MDD Markers",
+                        height=400,
+                    )
+                    fig_ind.add_vline(x=0, line_width=2, line_color="white")
+                    st.plotly_chart(fig_ind, use_container_width=True)
+
+                with col_metrics:
+                    ind_points = sum(df_ind['Color'] == COLOR_MATCH)
+                    ind_total = len(df_ind)
+                    ind_score = (ind_points / ind_total) * 100 if ind_total > 0 else 0
+
+                    st.metric(f"Clinical Score - {selected_sample}", f"{ind_score:.1f}%", f"{ind_points} of {ind_total} genes confirmed")
+
+                    if ind_score >= 70:
+                        st.error("🚨 **HIGH RISK:** Patient shows a strong MDD transcriptomic signature.")
+                    elif ind_score >= 40:
+                        st.warning("⚠️ **MODERATE RISK:** Patient shows an intermediate/mixed clinical profile.")
+                    else:
+                        st.success("✅ **LOW RISK:** Patient shows low molecular correlation with MDD.")
+
+                    st.markdown("<br>", unsafe_allow_html=True)
+                    st.markdown("**Chart Legend:**")
+                    st.markdown(f"<span style='color:{COLOR_MATCH}'>■ **Lilac:**</span> direction matches the clinical literature.", unsafe_allow_html=True)
+                    st.markdown(f"<span style='color:{COLOR_REVERSED}'>■ **Pink:**</span> gene direction opposes the literature.", unsafe_allow_html=True)
+
+    # ---------------------------------------------------------------------
+    # TAB 3: EXPRESSION HEATMAP
+    # ---------------------------------------------------------------------
+    with tab3:
+        st.subheader("🧬 Expression Heatmap (Top Genes + Signature)")
+        st.markdown("Global view of expression patterns across Control and MDD samples.")
+
+        if df_exp.empty:
+            st.warning("⚠️ **Heatmap Unavailable:** Requires matrices with intensity or sample data.")
+        else:
+            top_genes = df_stats.nlargest(30, 'Log10_P')['Gene'].tolist()
+            heatmap_targets = list(set(top_genes + list(LITERATURE_SIGNATURE.keys())))
+
+            targets_present = df_exp.index.intersection(heatmap_targets)
+            if not targets_present.empty:
+                df_heat = df_exp.loc[targets_present].copy()
+
+                if not is_agilent:
+                    new_names = {}
+                    for i, c in enumerate(df_heat.columns):
+                        if c in cols_control:
+                            new_names[c] = f"C{list(cols_control).index(c)+1}"
+                        else:
+                            new_names[c] = f"M{list(cols_mdd).index(c)+1}"
+                    df_heat = df_heat.rename(columns=new_names)
+
+                # Row-wise z-score (vectorized; always returns a DataFrame)
+                row_mean = df_heat.mean(axis=1)
+                row_std = df_heat.std(axis=1, ddof=0).replace(0, np.nan)
+                df_heat = df_heat.sub(row_mean, axis=0).div(row_std, axis=0).fillna(0)
+
+                plt.style.use('dark_background')
+                plt.rcParams['font.family'] = 'monospace'
+                n_cols = len(df_heat.columns)
+                fig_width = max(14, n_cols * 0.4)
+                fig, ax = plt.subplots(figsize=(fig_width, 10))
+                fig.patch.set_facecolor(BG)
+                ax.set_facecolor(BG)
+
+                sns.heatmap(df_heat, cmap=PURPLE_CMAP, center=0, ax=ax, yticklabels=True,
+                            xticklabels=True, cbar_kws={'label': 'Z-Score'},
+                            linecolor=PANEL, linewidths=0.5)
+
+                for label in ax.get_xticklabels():
+                    txt = label.get_text()
+                    if txt.startswith('C'): label.set_color(NEON)
+                    elif txt.startswith('M'): label.set_color(PINK)
+                    label.set_fontsize(8)
+                ax.set_xlabel('C = Control | M = MDD', color=TEXT, fontsize=12)
+
+                for label in ax.get_yticklabels():
+                    if label.get_text() in LITERATURE_SIGNATURE.keys():
+                        label.set_color(PINK)
+                        label.set_fontweight('bold')
+                    else:
+                        label.set_color(TEXT)
+
+                cbar = ax.collections[0].colorbar
+                cbar.ax.yaxis.label.set_color(TEXT)
+                cbar.ax.tick_params(colors=TEXT)
+
+                st.pyplot(fig, use_container_width=True)
+                plt.close(fig)
+            else:
+                st.info("No genes found to display in the Heatmap.")
