@@ -524,3 +524,11 @@ if uploaded_file:
                 plt.close(fig)
             else:
                 st.info("No genes found to display in the Heatmap.")
+
+def generate_vcs_badge(height=38):
+    return f"""<a href="https://philomathlearning.com/studio?utm_source=member_project&utm_medium=badge&utm_campaign=vcs_gallery" target="_blank" rel="noopener">
+  <img src="https://philomathlearning.com/badges/vcs-dark.svg" alt="Built with love in the Philomath Vibe Coding Studio" height="{height}">
+</a>"""
+
+my_badge = generate_vcs_badge(38)
+print(my_badge)
